@@ -416,6 +416,9 @@ async function runInteractiveCli() {
       (await prompter.question(
         "Enter batch merge number (0 = no batch merge): "
       )) || 0;
+    let mergeAllAfterComplete: string | boolean =
+      (await prompter.question("Merge all after complete? [Y/n]: ")) || "n";
+    mergeAllAfterComplete = mergeAllAfterComplete.toLowerCase().startsWith("y");
     batchMergeNumber = Number(batchMergeNumber);
     if (isNaN(batchMergeNumber) || batchMergeNumber < 0) {
       console.error("Invalid batch merge number.");
@@ -435,6 +438,7 @@ async function runInteractiveCli() {
 
     let completed = 0;
     const currentBatch: string[] = [];
+    const mergedChapters: string[] = [];
     for (const chapter of chapters) {
       const indexPadded = String(chapter.chapterIndex).padStart(3, "0");
       const outPath = `${targetFolder}/${indexPadded}.mp4`;
@@ -459,6 +463,7 @@ async function runInteractiveCli() {
               try {
                 await mergeMp4FilesConcat(currentBatch, mergedOut);
                 console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+                mergedChapters.push(mergedOut);
               } catch (e: any) {
                 console.error(`  Merge failed: ${e?.message ?? String(e)}`);
               }
@@ -498,6 +503,7 @@ async function runInteractiveCli() {
               try {
                 await mergeMp4FilesConcat(currentBatch, mergedOut);
                 console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+                mergedChapters.push(mergedOut);
               } catch (e: any) {
                 console.error(`  Merge failed: ${e?.message ?? String(e)}`);
               }
@@ -513,6 +519,19 @@ async function runInteractiveCli() {
     console.log(
       `\nDone. Downloaded ${completed}/${chapters.length} chapters to "${targetFolder}".`
     );
+
+    if (mergeAllAfterComplete) {
+      console.log(`  Merging all chapters...`);
+      try {
+        const mergedOut = `${targetFolder}/all.mp4`;
+        await mergeMp4FilesConcat(mergedChapters, mergedOut);
+        console.log(`  Merged all chapters OK -> ${path.basename(mergedOut)}`);
+      } catch (e: any) {
+        console.error(
+          `  Merge all chapters failed: ${e?.message ?? String(e)}`
+        );
+      }
+    }
   } finally {
     prompter.close();
   }
