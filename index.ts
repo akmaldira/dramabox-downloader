@@ -360,6 +360,19 @@ async function mergeMp4FilesConcat(filePaths: string[], outputPath: string) {
   }
 }
 
+async function deleteFiles(filePaths: string[]) {
+  for (const filePath of filePaths) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (e: any) {
+      if (e.code === "ENOENT") {
+        continue;
+      }
+      console.error(`  Failed to delete file: ${filePath}`);
+    }
+  }
+}
+
 async function runInteractiveCli() {
   const prompter = createPrompter();
   try {
@@ -408,7 +421,8 @@ async function runInteractiveCli() {
       return;
     }
 
-    console.log(`Found ${chapters.length} chapters for "${bookName}".`);
+    const totalChapters = chapters.length;
+    console.log(`Found ${totalChapters} chapters for "${bookName}".`);
     const confirm =
       (await prompter.question("Download all chapters? [Y/n]: ")).trim() || "y";
 
@@ -424,12 +438,17 @@ async function runInteractiveCli() {
     }
 
     let mergeAllAfterComplete: boolean = false;
+    let deleteAfterMerge: boolean = false;
     if (batchMergeNumber > 0) {
       const mergeAllAfterCompletePrompt =
         (await prompter.question("Merge all after complete? [Y/n]: ")) || "n";
       mergeAllAfterComplete = mergeAllAfterCompletePrompt
         .toLowerCase()
         .startsWith("y");
+
+      const deleteAfterMergePrompt =
+        (await prompter.question("Delete after merge? [Y/n]: ")) || "n";
+      deleteAfterMerge = deleteAfterMergePrompt.toLowerCase().startsWith("y");
     }
 
     if (!/^y(es)?$/i.test(confirm)) {
@@ -465,11 +484,19 @@ async function runInteractiveCli() {
               console.log(
                 `  Merged exists, skipping -> ${path.basename(mergedOut)}`
               );
+              if (deleteAfterMerge) {
+                console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                await deleteFiles(currentBatch);
+              }
             } else {
               console.log(`  Merging -> ${path.basename(mergedOut)}`);
               try {
                 await mergeMp4FilesConcat(currentBatch, mergedOut);
                 console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+                if (deleteAfterMerge) {
+                  console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                  await deleteFiles(currentBatch);
+                }
                 mergedChapters.push(mergedOut);
               } catch (e: any) {
                 console.error(`  Merge failed: ${e?.message ?? String(e)}`);
@@ -505,11 +532,19 @@ async function runInteractiveCli() {
               console.log(
                 `  Merged exists, skipping -> ${path.basename(mergedOut)}`
               );
+              if (deleteAfterMerge) {
+                console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                await deleteFiles(currentBatch);
+              }
             } else {
               console.log(`  Merging -> ${path.basename(mergedOut)}`);
               try {
                 await mergeMp4FilesConcat(currentBatch, mergedOut);
                 console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+                if (deleteAfterMerge) {
+                  console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                  await deleteFiles(currentBatch);
+                }
                 mergedChapters.push(mergedOut);
               } catch (e: any) {
                 console.error(`  Merge failed: ${e?.message ?? String(e)}`);
@@ -521,6 +556,36 @@ async function runInteractiveCli() {
       } catch (err: any) {
         console.error(`  Error: ${err?.message ?? String(err)}`);
       }
+    }
+
+    // Merge any remaining chapters in the last, smaller-than-batch group
+    if (batchMergeNumber > 0 && currentBatch.length > 0) {
+      const firstPath = currentBatch[0]!;
+      const lastPath = currentBatch[currentBatch.length - 1]!;
+      const firstBase = path.basename(firstPath, ".mp4");
+      const lastBase = path.basename(lastPath, ".mp4");
+      const mergedOut = `${targetFolder}/${firstBase}-${lastBase}.mp4`;
+      if (fs.existsSync(mergedOut)) {
+        console.log(`  Merged exists, skipping -> ${path.basename(mergedOut)}`);
+        if (deleteAfterMerge) {
+          console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+          await deleteFiles(currentBatch);
+        }
+      } else {
+        console.log(`  Merging -> ${path.basename(mergedOut)}`);
+        try {
+          await mergeMp4FilesConcat(currentBatch, mergedOut);
+          console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+          if (deleteAfterMerge) {
+            console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+            await deleteFiles(currentBatch);
+          }
+          mergedChapters.push(mergedOut);
+        } catch (e: any) {
+          console.error(`  Merge failed: ${e?.message ?? String(e)}`);
+        }
+      }
+      currentBatch.length = 0;
     }
 
     console.log(
