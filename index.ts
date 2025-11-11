@@ -416,13 +416,20 @@ async function runInteractiveCli() {
       (await prompter.question(
         "Enter batch merge number (0 = no batch merge): "
       )) || 0;
-    let mergeAllAfterComplete: string | boolean =
-      (await prompter.question("Merge all after complete? [Y/n]: ")) || "n";
-    mergeAllAfterComplete = mergeAllAfterComplete.toLowerCase().startsWith("y");
+
     batchMergeNumber = Number(batchMergeNumber);
     if (isNaN(batchMergeNumber) || batchMergeNumber < 0) {
       console.error("Invalid batch merge number.");
       return;
+    }
+
+    let mergeAllAfterComplete: boolean = false;
+    if (batchMergeNumber > 0) {
+      const mergeAllAfterCompletePrompt =
+        (await prompter.question("Merge all after complete? [Y/n]: ")) || "n";
+      mergeAllAfterComplete = mergeAllAfterCompletePrompt
+        .toLowerCase()
+        .startsWith("y");
     }
 
     if (!/^y(es)?$/i.test(confirm)) {
