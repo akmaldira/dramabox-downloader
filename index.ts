@@ -587,6 +587,19 @@ async function runAutomatedDownload() {
   }
 }
 
+async function deleteFiles(filePaths: string[]) {
+  for (const filePath of filePaths) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (e: any) {
+      if (e.code === "ENOENT") {
+        continue;
+      }
+      console.error(`  Failed to delete file: ${filePath}`);
+    }
+  }
+}
+
 async function runInteractiveCli() {
   const prompter = createPrompter();
   try {
@@ -626,7 +639,22 @@ async function runInteractiveCli() {
       return;
     }
 
-    let batchMergeNumber = Number((await prompter.question('Enter batch merge number (0 = no batch merge): ')) || 0);
+    process.stdout.write("\nFetching chapters...\n");
+    const chapters = await getDramaboxChapterList(bookId);
+    if (!chapters || chapters.length === 0) {
+      console.error("No chapters available.");
+      return;
+    }
+
+    const totalChapters = chapters.length;
+    console.log(`Found ${totalChapters} chapters for "${bookName}".`);
+    const confirm =
+      (await prompter.question("Download all chapters? [Y/n]: ")).trim() || "y";
+
+    let batchMergeNumber =
+      (await prompter.question(
+        "Enter batch merge number (0 = no batch merge): "
+      )) || 0;
 
     if (isNaN(batchMergeNumber) || batchMergeNumber < 0) {
       console.error('Invalid batch merge number.');
@@ -634,9 +662,17 @@ async function runInteractiveCli() {
     }
 
     let mergeAllAfterComplete: boolean = false;
+    let deleteAfterMerge: boolean = false;
     if (batchMergeNumber > 0) {
-      const mergeAllAfterCompletePrompt = (await prompter.question('Merge all after complete? [Y/n]: ')) || 'n';
-      mergeAllAfterComplete = mergeAllAfterCompletePrompt.toLowerCase().startsWith('y');
+      const mergeAllAfterCompletePrompt =
+        (await prompter.question("Merge all after complete? [Y/n]: ")) || "n";
+      mergeAllAfterComplete = mergeAllAfterCompletePrompt
+        .toLowerCase()
+        .startsWith("y");
+
+      const deleteAfterMergePrompt =
+        (await prompter.question("Delete after merge? [Y/n]: ")) || "n";
+      deleteAfterMerge = deleteAfterMergePrompt.toLowerCase().startsWith("y");
     }
 
     const confirm = (await prompter.question('Download all chapters? [Y/n]: ')).trim() || 'y';
@@ -652,10 +688,135 @@ async function runInteractiveCli() {
   }
 }
 
-// ============ MAIN MENU ============
+    let completed = 0;
+    const currentBatch: string[] = [];
+    const mergedChapters: string[] = [];
+    for (const chapter of chapters) {
+      const indexPadded = String(chapter.chapterIndex).padStart(3, "0");
+      const outPath = `${targetFolder}/${indexPadded}.mp4`;
+      if (fs.existsSync(outPath)) {
+        console.log(
+          `[${++completed}/${chapters.length}] Skip ${indexPadded}.mp4 (exists)`
+        );
+        if (batchMergeNumber > 0) {
+          currentBatch.push(outPath);
+          if (currentBatch.length === batchMergeNumber) {
+            const firstPath = currentBatch[0]!;
+            const lastPath = currentBatch[currentBatch.length - 1]!;
+            const firstBase = path.basename(firstPath, ".mp4");
+            const lastBase = path.basename(lastPath, ".mp4");
+            const mergedOut = `${targetFolder}/${firstBase}-${lastBase}.mp4`;
+            if (fs.existsSync(mergedOut)) {
+              console.log(
+                `  Merged exists, skipping -> ${path.basename(mergedOut)}`
+              );
+              if (deleteAfterMerge) {
+                console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                await deleteFiles(currentBatch);
+              }
+            } else {
+              console.log(`  Merging -> ${path.basename(mergedOut)}`);
+              try {
+                await mergeMp4FilesConcat(currentBatch, mergedOut);
+                console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+                if (deleteAfterMerge) {
+                  console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                  await deleteFiles(currentBatch);
+                }
+                mergedChapters.push(mergedOut);
+              } catch (e: any) {
+                console.error(`  Merge failed: ${e?.message ?? String(e)}`);
+              }
+            }
+            currentBatch.length = 0;
+          }
+        }
+        continue;
+      }
+      console.log(
+        `[${completed + 1}/${chapters.length}] Downloading Chapter ${
+          chapter.chapterIndex
+        } ${chapter.qualitySelected ? `(${chapter.qualitySelected}p)` : ""}`
+      );
+      try {
+        const tempPath = outPath + ".part";
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+        await downloadWithProgress(chapter.mp4Url, tempPath, "  Progress");
+        fs.renameSync(tempPath, outPath);
+        completed++;
+        if (batchMergeNumber > 0) {
+          currentBatch.push(outPath);
+          if (currentBatch.length === batchMergeNumber) {
+            const firstPath = currentBatch[0]!;
+            const lastPath = currentBatch[currentBatch.length - 1]!;
+            const firstBase = path.basename(firstPath, ".mp4");
+            const lastBase = path.basename(lastPath, ".mp4");
+            const mergedOut = `${targetFolder}/${firstBase}-${lastBase}.mp4`;
+            if (fs.existsSync(mergedOut)) {
+              console.log(
+                `  Merged exists, skipping -> ${path.basename(mergedOut)}`
+              );
+              if (deleteAfterMerge) {
+                console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                await deleteFiles(currentBatch);
+              }
+            } else {
+              console.log(`  Merging -> ${path.basename(mergedOut)}`);
+              try {
+                await mergeMp4FilesConcat(currentBatch, mergedOut);
+                console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+                if (deleteAfterMerge) {
+                  console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+                  await deleteFiles(currentBatch);
+                }
+                mergedChapters.push(mergedOut);
+              } catch (e: any) {
+                console.error(`  Merge failed: ${e?.message ?? String(e)}`);
+              }
+            }
+            currentBatch.length = 0;
+          }
+        }
+      } catch (err: any) {
+        console.error(`  Error: ${err?.message ?? String(err)}`);
+      }
+    }
 
-async function mainMenu() {
-  const prompter = createPrompter();
+    // Merge any remaining chapters in the last, smaller-than-batch group
+    if (batchMergeNumber > 0 && currentBatch.length > 0) {
+      const firstPath = currentBatch[0]!;
+      const lastPath = currentBatch[currentBatch.length - 1]!;
+      const firstBase = path.basename(firstPath, ".mp4");
+      const lastBase = path.basename(lastPath, ".mp4");
+      const mergedOut = `${targetFolder}/${firstBase}-${lastBase}.mp4`;
+      if (fs.existsSync(mergedOut)) {
+        console.log(`  Merged exists, skipping -> ${path.basename(mergedOut)}`);
+        if (deleteAfterMerge) {
+          console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+          await deleteFiles(currentBatch);
+        }
+      } else {
+        console.log(`  Merging -> ${path.basename(mergedOut)}`);
+        try {
+          await mergeMp4FilesConcat(currentBatch, mergedOut);
+          console.log(`  Merged OK -> ${path.basename(mergedOut)}`);
+          if (deleteAfterMerge) {
+            console.log(`  Deleting -> ${currentBatch.join(", ")}`);
+            await deleteFiles(currentBatch);
+          }
+          mergedChapters.push(mergedOut);
+        } catch (e: any) {
+          console.error(`  Merge failed: ${e?.message ?? String(e)}`);
+        }
+      }
+      currentBatch.length = 0;
+    }
+
+    console.log(
+      `\nDone. Downloaded ${completed}/${chapters.length} chapters to "${targetFolder}".`
+    );
 
   try {
     console.log(`
