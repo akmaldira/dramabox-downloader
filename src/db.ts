@@ -13,6 +13,7 @@ export class SeriesModel {
   cover_path: string;
   source: string;
   source_id: string;
+  drive_folder_id: string | null;
   created_at: number;
 
   constructor(data: Series) {
@@ -23,6 +24,7 @@ export class SeriesModel {
     this.cover_path = data.cover_path;
     this.source = data.source;
     this.source_id = data.source_id;
+    this.drive_folder_id = data.drive_folder_id;
     this.created_at = data.created_at;
   }
 
@@ -35,6 +37,7 @@ export class SeriesModel {
       cover_path: this.cover_path,
       source: this.source,
       source_id: this.source_id,
+      drive_folder_id: this.drive_folder_id,
       created_at: this.created_at,
     };
   }
@@ -99,6 +102,7 @@ export async function initDb() {
   cover_path TEXT NOT NULL,
   source TEXT NOT NULL,
   source_id TEXT NOT NULL,
+  drive_folder_id TEXT,
   created_at INTEGER NOT NULL,
   UNIQUE(source, source_id)
 );
@@ -128,7 +132,7 @@ class SeriesDb {
   getAll() {
     const getQuery = db
       .query(
-        `SELECT id, title, unique_title, description, cover_path, source, source_id, created_at FROM series`
+        `SELECT id, title, unique_title, description, cover_path, source, source_id, drive_folder_id, created_at FROM series`
       )
       .as(SeriesModel);
     return getQuery.all();
@@ -137,22 +141,18 @@ class SeriesDb {
   getUnique(source: string, source_id: string) {
     const getQuery = db
       .query(
-        `SELECT id, title, unique_title, description, cover_path, source, source_id, created_at FROM series WHERE source = $source AND source_id = $source_id`
+        `SELECT id, title, unique_title, description, cover_path, source, source_id, drive_folder_id, created_at FROM series WHERE source = $source AND source_id = $source_id`
       )
       .as(SeriesModel);
 
     return getQuery.get({ $source: source, $source_id: source_id });
   }
 
-  upsert(series: Omit<Series, "created_at">) {
-    const existingSeries = this.getUnique(series.source, series.source_id);
-    if (existingSeries) {
-      return existingSeries;
-    }
-
+  create(series: Omit<Series, "created_at">): Series {
+    const createdAt = Math.floor(Date.now() / 1000);
     const insertQuery = db.query(`
-    INSERT INTO series (id, title, unique_title, description, cover_path, source, source_id, created_at)
-    VALUES ($id, $title, $unique_title, $description, $cover_path, $source, $source_id, $created_at)
+    INSERT INTO series (id, title, unique_title, description, cover_path, source, source_id, drive_folder_id, created_at)
+    VALUES ($id, $title, $unique_title, $description, $cover_path, $source, $source_id, $drive_folder_id, $created_at)
   `);
     insertQuery.run({
       $id: series.id,
@@ -162,36 +162,45 @@ class SeriesDb {
       $cover_path: series.cover_path,
       $source: series.source,
       $source_id: series.source_id,
-      $created_at: Math.floor(Date.now() / 1000),
+      $drive_folder_id: series.drive_folder_id,
+      $created_at: createdAt,
     });
 
-    return series;
+    return {
+      ...series,
+      created_at: createdAt,
+    };
   }
 
-  insertMany(seriesList: Omit<Series, "created_at">[]) {
-    const insertQuery =
-      db.prepare(`INSERT INTO series (id, title, unique_title, description, cover_path, source, source_id, created_at)
-    VALUES ($id, $title, $unique_title, $description, $cover_path, $source, $source_id, $created_at)`);
-    const insertRun = db.transaction(
-      (seriesList: Omit<Series, "created_at">[]) => {
-        for (const series of seriesList) {
-          insertQuery.run({
-            $id: series.id,
-            $title: series.title,
-            $unique_title: series.unique_title,
-            $description: series.description,
-            $cover_path: series.cover_path,
-            $source: series.source,
-            $source_id: series.source_id,
-            $created_at: Math.floor(Date.now() / 1000),
-          });
-        }
-        return seriesList.length;
-      }
-    );
+  updateUnique(series: Omit<Series, "created_at" | "id">): Series {
+    const existingSeries = this.getUnique(series.source, series.source_id);
+    if (!existingSeries) {
+      throw new Error("Series not found");
+    }
+    const updateQuery = db.query(`
+      UPDATE series SET title = $title, unique_title = $unique_title, description = $description, cover_path = $cover_path, source = $source, source_id = $source_id, drive_folder_id = $drive_folder_id WHERE source = $source AND source_id = $source_id
+    `);
+    updateQuery.run({
+      $title: series.title,
+      $unique_title: series.unique_title,
+      $description: series.description,
+      $cover_path: series.cover_path,
+      $source: series.source,
+      $source_id: series.source_id,
+      $drive_folder_id: series.drive_folder_id,
+    });
+    return {
+      ...existingSeries,
+      ...series,
+    };
+  }
 
-    const total = insertRun(seriesList);
-    return total;
+  upsert(series: Omit<Series, "created_at">): Series {
+    const existingSeries = this.getUnique(series.source, series.source_id);
+    if (existingSeries) {
+      return this.updateUnique(series);
+    }
+    return this.create(series);
   }
 }
 export const seriesDb = new SeriesDb();
@@ -216,12 +225,8 @@ class ChapterDb {
     return getQuery.get({ $series_id: series_id, $idx: idx });
   }
 
-  upsert(chapter: Chapter) {
-    const existingChapter = this.getUnique(chapter.series_id, chapter.idx);
-    if (existingChapter) {
-      return existingChapter;
-    }
-
+  create(chapter: Omit<Chapter, "created_at">): Chapter {
+    const createdAt = Math.floor(Date.now() / 1000);
     const insertQuery = db.query(`
     INSERT INTO chapters (id, series_id, title, idx, description, cover_path, video_url, video_path, drive_url, status, error_message, created_at)
     VALUES ($id, $series_id, $title, $idx, $description, $cover_path, $video_url, $video_path, $drive_url, $status, $error_message, $created_at)
@@ -238,10 +243,49 @@ class ChapterDb {
       $drive_url: chapter.drive_url,
       $status: chapter.status,
       $error_message: chapter.error_message,
-      $created_at: Math.floor(Date.now() / 1000),
+      $created_at: createdAt,
     });
 
-    return chapter;
+    return {
+      ...chapter,
+      created_at: createdAt,
+    };
+  }
+
+  updateUnique(chapter: Omit<Chapter, "created_at" | "id">): Chapter {
+    const existingChapter = this.getUnique(chapter.series_id, chapter.idx);
+    if (!existingChapter) {
+      throw new Error("Chapter not found");
+    }
+
+    const updateQuery = db.query(`
+      UPDATE chapters SET series_id = $series_id, title = $title, idx = $idx, description = $description, cover_path = $cover_path, video_url = $video_url, video_path = $video_path, drive_url = $drive_url, status = $status, error_message = $error_message WHERE series_id = $series_id AND idx = $idx
+    `);
+    updateQuery.run({
+      $series_id: chapter.series_id,
+      $title: chapter.title,
+      $idx: chapter.idx,
+      $description: chapter.description,
+      $cover_path: chapter.cover_path,
+      $video_url: chapter.video_url,
+      $video_path: chapter.video_path,
+      $drive_url: chapter.drive_url,
+      $status: chapter.status,
+      $error_message: chapter.error_message,
+    });
+    return {
+      ...existingChapter,
+      ...chapter,
+    };
+  }
+
+  upsert(chapter: Omit<Chapter, "created_at">): Chapter {
+    const existingChapter = this.getUnique(chapter.series_id, chapter.idx);
+    if (existingChapter) {
+      return this.updateUnique(chapter);
+    }
+
+    return this.create(chapter);
   }
 }
 export const chapterDb = new ChapterDb();

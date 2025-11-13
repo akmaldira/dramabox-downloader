@@ -1,12 +1,11 @@
 import fs from "fs";
-import path from "path";
-import { uploadFileToDrive } from "./google-api";
+import { chapterDb } from "./db";
 import type {
+  Chapter,
   Task,
   WorkerEventDone,
   WorkerEventDownload,
   WorkerEventError,
-  WorkerEventUpload,
 } from "./types";
 
 declare var self: Worker;
@@ -46,15 +45,19 @@ async function downloadFile(
 }
 
 self.onmessage = async (
-  event: MessageEvent<Task & { threadId: string; googleDriveBasePath?: string }>
+  event: MessageEvent<Task & { threadId: string; chapterRecord: Chapter }>
 ) => {
   const msg = event.data;
 
-  const { idx, title, videoUrl, outputPath, threadId } = msg;
-  let googleDriveBasePath = msg.googleDriveBasePath;
-  if (!googleDriveBasePath) {
-    googleDriveBasePath = "Drama";
-  }
+  const {
+    idx,
+    title,
+    videoUrl,
+    outputPath,
+    threadId,
+    chapterRecord,
+    driveFolderId,
+  } = msg;
 
   try {
     if (fs.existsSync(outputPath)) {
@@ -91,42 +94,31 @@ self.onmessage = async (
         total,
       } as WorkerEventDownload);
     };
-
     await downloadFile(videoUrl, tempPath, onDownload);
     fs.renameSync(tempPath, outputPath);
-    const total = Number(fs.statSync(outputPath).size) || 0;
+    chapterRecord.video_path = outputPath;
+    chapterRecord.status = chapterRecord.status + ",downloaded";
 
-    const onUpload = (received: number) => {
-      self.postMessage({
-        action: "upload",
-        idx,
-        title,
-        threadId,
-        received,
-        total,
-      } as WorkerEventUpload);
-    };
+    if (driveFolderId) {
+      // MALAS
+      // chapterRecord.drive_url = await uploadFileToDrive(
+      //   outputPath,
+      //   driveFolderId
+      // );
+    }
 
-    const folderAndFileName = outputPath.split(path.sep).slice(-2) || [];
-    const googleDrivePath = path.join(
-      googleDriveBasePath,
-      folderAndFileName[0] || "",
-      folderAndFileName[1] || `${title}.mp4`
-    );
-    await uploadFileToDrive(outputPath, googleDrivePath, onUpload);
-
-    fs.unlinkSync(outputPath);
-
+    chapterDb.updateUnique(chapterRecord);
     self.postMessage({
       action: "done",
       title,
       idx,
-      videoUrl,
-      driveUrl: googleDrivePath,
-      outputPath,
       threadId,
     } as WorkerEventDone);
   } catch (err) {
+    chapterRecord.status = chapterRecord.status + ",failed";
+    chapterRecord.error_message =
+      err instanceof Error ? err.message : String(err);
+    chapterDb.updateUnique(chapterRecord);
     self.postMessage({
       action: "error",
       title,

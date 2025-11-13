@@ -6,6 +6,7 @@ export type Series = {
   cover_path: string;
   source: string;
   source_id: string;
+  drive_folder_id: string | null;
   created_at: number;
 };
 
@@ -31,6 +32,7 @@ export type Task = {
   title: string;
   videoUrl: string;
   outputPath: string;
+  driveFolderId: string | null;
 };
 
 export type SlotState = {
@@ -61,9 +63,6 @@ export type WorkerEventDone = {
   action: "done";
   title: string;
   threadId: string;
-  videoUrl: string;
-  driveUrl: string | null;
-  outputPath: string;
   idx: number;
 };
 

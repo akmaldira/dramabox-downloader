@@ -4,12 +4,14 @@ import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { chapterDb, initDb, seriesDb } from "./db";
 import { DramaboxAPI } from "./dramabox";
-import { authorizeGoogleApi } from "./google-api";
+import {
+  authorizeGoogleApi,
+  createFolderOnDrive,
+  uploadFolderToDrive,
+} from "./google-api";
 import { fmtBytes, normalizeFolderName, question } from "./helper";
 import { ThreadLogger } from "./logger";
 import type { Series, SlotState, Task, WorkerEvent } from "./types";
-
-throw new Error("Not implemented yet woi kwkwkkwkwkwkk, lagi dikembangin");
 
 const NUM_OF_WORKERS = process.env.NUM_OF_WORKERS
   ? parseInt(process.env.NUM_OF_WORKERS)
@@ -99,6 +101,7 @@ async function buildTasks(series: Series) {
       title: ch.chapterName,
       videoUrl: selectedUrl,
       outputPath,
+      driveFolderId: series.drive_folder_id,
     });
   }
   return {
@@ -131,9 +134,27 @@ async function processTasks(seriesRecord: Series, tasks: Task[]) {
   const assignNext = (w: Worker, slotIdx: number, threadId: string) => {
     if (nextIdx >= tasks.length) return false;
     const task = tasks[nextIdx++]!;
+    const chapterRecord = chapterDb.upsert({
+      id: uuidv4(),
+      series_id: seriesRecord.id,
+      idx: task.idx,
+      description: null,
+      cover_path: null,
+      title: task.title,
+      video_url: task.videoUrl,
+      video_path: task.outputPath,
+      drive_url: null,
+      status: "pending",
+      error_message: null,
+    });
     slots[slotIdx] = { task, received: 0, total: undefined };
     logger.info(threadId, `Assigning task: ${task.title} (${task.idx})`);
-    w.postMessage({ ...task, threadId });
+    w.postMessage({
+      ...task,
+      threadId,
+      chapterRecord,
+      driveFolderId: seriesRecord.drive_folder_id,
+    });
     return true;
   };
 
@@ -179,20 +200,6 @@ async function processTasks(seriesRecord: Series, tasks: Task[]) {
         }
 
         if (msg.action === "done") {
-          chapterDb.upsert({
-            id: uuidv4(),
-            series_id: seriesRecord.id,
-            idx: msg.idx,
-            description: null,
-            cover_path: null,
-            title: msg.title,
-            video_url: msg.videoUrl,
-            video_path: msg.outputPath,
-            drive_url: msg.driveUrl,
-            status: "completed",
-            error_message: null,
-            created_at: Date.now(),
-          });
           completed++;
           if (!assignNext(w, i, threadId)) {
             w.terminate();
@@ -204,20 +211,6 @@ async function processTasks(seriesRecord: Series, tasks: Task[]) {
         }
 
         if (msg.action === "error") {
-          chapterDb.upsert({
-            id: uuidv4(),
-            series_id: seriesRecord.id,
-            idx: msg.idx,
-            description: null,
-            cover_path: null,
-            title: msg.title,
-            video_url: msg.videoUrl,
-            video_path: null,
-            drive_url: null,
-            status: "failed",
-            error_message: msg.message,
-            created_at: Date.now(),
-          });
           failed++;
           const s = slots[i]!;
           const name = s.task ? s.task.title : "unknown";
@@ -241,9 +234,18 @@ async function processTasks(seriesRecord: Series, tasks: Task[]) {
 }
 
 if (import.meta.main) {
-  const uploadToDrive = await question("Upload to Google Drive? (y/n) ");
-  if (/^y(es)?$/i.test(uploadToDrive)) {
+  const uploadToDrivePrompt = await question("Upload to Google Drive? (y/n): ");
+  let uploadToDrive = false;
+  let deleteAfterUpload = false;
+  if (/^y(es)?$/i.test(uploadToDrivePrompt.trim())) {
     await authorizeGoogleApi();
+    uploadToDrive = true;
+    const deleteAfterUploadPrompt = await question(
+      "Delete after upload to Drive? (y/n): "
+    );
+    if (/^y(es)?$/i.test(deleteAfterUploadPrompt.trim())) {
+      deleteAfterUpload = true;
+    }
   }
 
   // Ger all series (required: id, title)
@@ -255,21 +257,61 @@ if (import.meta.main) {
   for (const series of seriesList) {
     logger.info(mainThreadId, `Processing ${series.title} (${series.id})`);
     const { series: seriesDetail, tasks } = await buildTasks(series);
+    const uniqueFolderName = normalizeFolderName(
+      `${seriesDetail.book.bookName} (${series.id})`
+    );
+    let driveFolderId = null;
+    if (uploadToDrive) {
+      const baseDriveFolderId = await createFolderOnDrive("Dramabox");
+      driveFolderId = await createFolderOnDrive(
+        uniqueFolderName,
+        baseDriveFolderId
+      );
+    }
     const seriesRecord = seriesDb.upsert({
       id: uuidv4(),
       title: seriesDetail.book.bookName,
-      unique_title: normalizeFolderName(
-        `${seriesDetail.book.bookName} (${series.id})`
-      ),
+      unique_title: uniqueFolderName,
       description: seriesDetail.book.introduction,
       cover_path: seriesDetail.book.cover,
+      drive_folder_id: driveFolderId,
       source: source.id,
       source_id: series.id,
     });
-    const { completed, failed } = await processTasks(
-      seriesRecord as Series,
-      tasks
-    );
+    const { completed, failed } = await processTasks(seriesRecord, tasks);
+    if (uploadToDrive && driveFolderId) {
+      const seriesDir = path.join(
+        downloadsDir,
+        normalizeFolderName(seriesRecord.unique_title)
+      );
+      logger.info(
+        mainThreadId,
+        `Uploading ${seriesDir} to Drive (${driveFolderId})`
+      );
+      try {
+        await uploadFolderToDrive(seriesDir, driveFolderId);
+        logger.info(
+          mainThreadId,
+          `Uploaded ${seriesDir} to Drive (${driveFolderId})`
+        );
+        if (deleteAfterUpload) {
+          logger.info(mainThreadId, `Deleting ${seriesDir}`);
+          fs.rmdirSync(seriesDir, { recursive: true });
+        }
+      } catch (error) {
+        logger.info(
+          mainThreadId,
+          `Failed to upload ${seriesDir} to Drive (${driveFolderId}): ${error}`
+        );
+        const oldErrorMessage = await Bun.file(
+          path.join(process.cwd(), "logs", "error.log")
+        ).text();
+        await Bun.write(
+          path.join(process.cwd(), "logs", "error.log"),
+          `${oldErrorMessage}\n${error}`
+        );
+      }
+    }
     logger.info(mainThreadId, `Finished ${completed} tasks, ${failed} failed`);
   }
 }
