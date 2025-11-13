@@ -34,3 +34,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 downloads/*
 !downloads/.gitkeep
+note.txt
+client_secret.json
+service_account.json
+dracin.sqlite
+credentials.json
+token.json

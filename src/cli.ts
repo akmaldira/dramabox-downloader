@@ -1,0 +1,275 @@
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { v4 as uuidv4 } from "uuid";
+import { chapterDb, initDb, seriesDb } from "./db";
+import { DramaboxAPI } from "./dramabox";
+import { authorizeGoogleApi } from "./google-api";
+import { fmtBytes, normalizeFolderName, question } from "./helper";
+import { ThreadLogger } from "./logger";
+import type { Series, SlotState, Task, WorkerEvent } from "./types";
+
+throw new Error("Not implemented yet woi kwkwkkwkwkwkk, lagi dikembangin");
+
+const NUM_OF_WORKERS = process.env.NUM_OF_WORKERS
+  ? parseInt(process.env.NUM_OF_WORKERS)
+  : Math.max(1, Math.floor(os.cpus().length / 2));
+const downloadsDir =
+  process.env.DOWNLOADS_DIR || path.join(process.cwd(), "downloads");
+
+const mainThreadId = "main";
+const threads = [
+  mainThreadId,
+  ...Array.from({ length: NUM_OF_WORKERS }, (_, i) => `thread-${i + 1}`),
+];
+
+const logger = new ThreadLogger(threads);
+
+const sources = {
+  dramabox: {
+    id: "dramabox",
+    api: new DramaboxAPI(),
+  },
+};
+
+await initDb();
+
+const source = sources.dramabox;
+
+async function buildTasks(series: Series) {
+  const seriesDetail = await source.api.getBookDetail(series.id);
+  const chapterIds = seriesDetail.chapterList
+    .map((chapter) => chapter.id)
+    .filter((id) => id !== "");
+  if (chapterIds.length === 0) {
+    return {
+      series: seriesDetail,
+      tasks: [],
+    };
+  }
+
+  logger.info(mainThreadId, `Unlocking ${chapterIds.length} chapters`);
+  const unlocked = await source.api.batchUnlockEpisode(series.id, chapterIds);
+
+  const folderName = `${series.title} (${series.id})`;
+  const seriesDir = path.join(downloadsDir, normalizeFolderName(folderName));
+  if (!fs.existsSync(downloadsDir))
+    fs.mkdirSync(downloadsDir, { recursive: true });
+  if (!fs.existsSync(seriesDir)) fs.mkdirSync(seriesDir, { recursive: true });
+
+  const tasks: Task[] = [];
+  for (const ch of unlocked.chapterVoList) {
+    if (!ch.cdnList || ch.cdnList.length === 0) continue;
+
+    let selectedUrl: string | null = null;
+    let selectedQuality = 0;
+    for (const cdn of ch.cdnList) {
+      const sorted = [...cdn.videoPathList].sort(
+        (a, b) => b.quality - a.quality
+      );
+      if (sorted.length === 0) continue;
+      const vp = sorted[0]!;
+      const maybePath = vp.videoPath;
+      const base = (cdn.cdnDomain ?? "").replace(/\/+$/, "");
+      const pathPart = String(maybePath ?? "").replace(/^\/+/, "");
+      const url =
+        maybePath.startsWith("http://") || maybePath.startsWith("https://")
+          ? maybePath
+          : base
+          ? `${base}/${pathPart}`
+          : maybePath;
+
+      selectedUrl = url;
+      selectedQuality = vp.quality;
+      break;
+    }
+    if (!selectedUrl) continue;
+
+    const indexPadded = String(ch.chapterIndex).padStart(3, "0");
+    const outputPath = path.join(seriesDir, `${indexPadded}.mp4`);
+    if (fs.existsSync(outputPath)) {
+      logger.info(mainThreadId, `Skip ${path.basename(outputPath)} (exists)`);
+      continue;
+    }
+
+    tasks.push({
+      source: source.id,
+      sourceId: series.id,
+      idx: ch.chapterIndex,
+      title: ch.chapterName,
+      videoUrl: selectedUrl,
+      outputPath,
+    });
+  }
+  return {
+    series: seriesDetail,
+    tasks,
+  };
+}
+
+async function processTasks(seriesRecord: Series, tasks: Task[]) {
+  if (tasks.length === 0) {
+    logger.info(
+      mainThreadId,
+      "Nothing to download. All chapters exist or none available."
+    );
+    return { completed: 0, failed: 0 };
+  }
+
+  const total = tasks.length;
+  let nextIdx = 0;
+  let completed = 0;
+  let failed = 0;
+
+  const workerUrl = import.meta.resolve("./worker.ts");
+  const slots: SlotState[] = Array.from({ length: NUM_OF_WORKERS }, () => ({
+    task: undefined,
+    received: 0,
+    total: undefined,
+  }));
+
+  const assignNext = (w: Worker, slotIdx: number, threadId: string) => {
+    if (nextIdx >= tasks.length) return false;
+    const task = tasks[nextIdx++]!;
+    slots[slotIdx] = { task, received: 0, total: undefined };
+    logger.info(threadId, `Assigning task: ${task.title} (${task.idx})`);
+    w.postMessage({ ...task, threadId });
+    return true;
+  };
+
+  await new Promise<void>((resolve) => {
+    let liveWorkers = 0;
+
+    for (let i = 0; i < Math.min(NUM_OF_WORKERS, tasks.length); i++) {
+      const threadIdx = i + 1;
+      const threadId = `thread-${threadIdx}`;
+      const w = new Worker(workerUrl);
+      liveWorkers++;
+
+      w.onmessage = (ev: MessageEvent<WorkerEvent>) => {
+        const msg = ev.data;
+        if (!msg || typeof msg !== "object") return;
+
+        if (msg.action === "download") {
+          const slot = slots[i]!;
+          if (!slot.task || slot.task.idx !== msg.idx) return;
+          slot.received = msg.received;
+          slot.total = msg.total;
+          logger.info(
+            msg.threadId,
+            `Downloading: ${msg.title} [${fmtBytes(msg.received)}/${fmtBytes(
+              msg.total
+            )}] (${Math.round((msg.received / (msg.total ?? 0)) * 100)}%)`
+          );
+          return;
+        }
+
+        if (msg.action === "upload") {
+          const slot = slots[i]!;
+          if (!slot.task || slot.task.idx !== msg.idx) return;
+          slot.received = msg.received;
+          slot.total = msg.total;
+          logger.info(
+            msg.threadId,
+            `Uploading: ${msg.title} [${fmtBytes(msg.received)}/${fmtBytes(
+              msg.total
+            )}] (${Math.round((msg.received / (msg.total ?? 0)) * 100)}%)`
+          );
+          return;
+        }
+
+        if (msg.action === "done") {
+          chapterDb.upsert({
+            id: uuidv4(),
+            series_id: seriesRecord.id,
+            idx: msg.idx,
+            description: null,
+            cover_path: null,
+            title: msg.title,
+            video_url: msg.videoUrl,
+            video_path: msg.outputPath,
+            drive_url: msg.driveUrl,
+            status: "completed",
+            error_message: null,
+            created_at: Date.now(),
+          });
+          completed++;
+          if (!assignNext(w, i, threadId)) {
+            w.terminate();
+            liveWorkers--;
+            if (liveWorkers === 0) resolve();
+            return;
+          }
+          return;
+        }
+
+        if (msg.action === "error") {
+          chapterDb.upsert({
+            id: uuidv4(),
+            series_id: seriesRecord.id,
+            idx: msg.idx,
+            description: null,
+            cover_path: null,
+            title: msg.title,
+            video_url: msg.videoUrl,
+            video_path: null,
+            drive_url: null,
+            status: "failed",
+            error_message: msg.message,
+            created_at: Date.now(),
+          });
+          failed++;
+          const s = slots[i]!;
+          const name = s.task ? s.task.title : "unknown";
+          logger.info(msg.threadId, `ERROR: ${name} — ${msg.message}`);
+          // Try next
+          if (!assignNext(w, i, threadId)) {
+            w.terminate();
+            liveWorkers--;
+            if (liveWorkers === 0) resolve();
+          }
+          return;
+        }
+      };
+
+      assignNext(w, i, threadId);
+    }
+  });
+
+  logger.info(mainThreadId, `Finished ${completed} tasks, ${failed} failed`);
+  return { completed, failed };
+}
+
+if (import.meta.main) {
+  const uploadToDrive = await question("Upload to Google Drive? (y/n) ");
+  if (/^y(es)?$/i.test(uploadToDrive)) {
+    await authorizeGoogleApi();
+  }
+
+  // Ger all series (required: id, title)
+  const seriesList = (await Bun.file(
+    path.join(process.cwd(), "series.json")
+  ).json()) as Series[];
+  logger.info(mainThreadId, `Found ${seriesList.length} series`);
+
+  for (const series of seriesList) {
+    logger.info(mainThreadId, `Processing ${series.title} (${series.id})`);
+    const { series: seriesDetail, tasks } = await buildTasks(series);
+    const seriesRecord = seriesDb.upsert({
+      id: uuidv4(),
+      title: seriesDetail.book.bookName,
+      unique_title: normalizeFolderName(
+        `${seriesDetail.book.bookName} (${series.id})`
+      ),
+      description: seriesDetail.book.introduction,
+      cover_path: seriesDetail.book.cover,
+      source: source.id,
+      source_id: series.id,
+    });
+    const { completed, failed } = await processTasks(
+      seriesRecord as Series,
+      tasks
+    );
+    logger.info(mainThreadId, `Finished ${completed} tasks, ${failed} failed`);
+  }
+}

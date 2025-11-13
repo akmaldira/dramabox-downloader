@@ -1,137 +1,19 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
-
-const headers = {
-  accept: "application/json, text/plain, */*",
-  "content-type": "application/json; charset=UTF-8",
-  origin: "https://dramabox.drama.web.id",
-  referer: "https://dramabox.drama.web.id/",
-
-  // These are required
-  "android-id": "ffffffff02c7834a000000000",
-  apn: "1",
-  brand: "Xiaomi",
-  cid: "DAUAF1064291",
-  "current-language": "in",
-  "device-id": "70b83a0e-5f70-4643-987d-fcbb61694593",
-  language: "in",
-  md: "Redmi Note 8",
-  mf: "XIAOMI",
-  ov: "9",
-  "over-flow": "new-fly",
-  p: "48",
-  "package-name": "com.storymatrix.drama",
-  "time-zone": "+0700",
-
-  // VERY IMPORTANT AUTH HEADERS
-  sn: "qnW6l508K/XeRoPtceSoDJ+Mhl5Z+qYOqFDrIay3H+kH45vvdXz3PV14TCufevOc+vwJkuud3sR0RAP8NpFJLWPJxPmy+HvDfyZFaftQG5k+/iqA9qaETucPLID948lgIShMfiSoWhXYD8NBQQ/vAN5zesVSUR0KkKPKDq/q0/EMSBMyaEQFr/qa3FXsSUdGV+fGEAu2JxnU2eFMBuF+UinHrFRaD+2BSQxJVUlRoM5pWbdmKx0iY8BxxDmc7MI5B6LBI4gDCRiCwjrNp791uNeFic6aeN4Hxr51I0LloRMn6Ce1PRY6nG3UnslqYrpUlolbh/zyIIu2k4E+uA5yxw==",
-  tn: "Bearer ZXlKMGVYQWlPaUpLVjFRaUxDSmhiR2NpT2lKSVV6STFOaUo5LmV5SnlaV2RwYzNSbGNsUjVjR1VpT2lKVVJVMVFJaXdpZFhObGNrbGtJam96TXpNM016RTFPREI5LkZiTlhjcUgyaFg1dTZ4VkFEdEF1RlVpVVZRV0NxMzJENkZoLVlSQTZWNjg=",
-  "user-id": "333731580",
-  version: "470",
-  vn: "4.7.0",
-
-  // Browser headers
-  "sec-ch-ua":
-    '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
-  "sec-ch-ua-platform": '"macOS"',
-  "sec-fetch-site": "cross-site",
-  "sec-fetch-mode": "cors",
-};
-
-class DramaboxAPI {
-  private headers: Record<string, string> = headers;
-  private timestamp: number = Date.now();
-
-  async getSignature(payload: any) {
-    this.timestamp = Date.now();
-    const deviceId = this.headers["device-id"];
-    const androidId = this.headers["android-id"];
-    const tn = this.headers["tn"];
-    const strPayload = `timestamp=${this.timestamp}${JSON.stringify(
-      payload
-    )}${deviceId}${androidId}${tn}`;
-    const signReqBody = { str: strPayload };
-
-    const res = await fetch(`https://dramabox-api.d5studio.site/sign`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "*/*",
-        // the site used a Referer/origin -- optional from browser
-        Origin: "https://dramabox.drama.web.id",
-      },
-      body: JSON.stringify(signReqBody),
-    });
-
-    if (!res.ok) throw new Error(`sign request failed: ${res.status}`);
-    const json = (await res.json()) as any;
-    if (!json.success) throw new Error("sign endpoint returned success=false");
-    return json.signature;
-  }
-
-  async search(keyword: string) {
-    const payload = {
-      searchSource: "搜索按钮",
-      pageNo: 1,
-      pageSize: 20,
-      from: "search_sug",
-      keyword,
-    };
-    const signature = await this.getSignature(payload);
-    const res = await fetch(
-      `https://dramabox-api.d5studio.site/proxy.php/drama-box/search/search?timestamp=${this.timestamp}`,
-      {
-        method: "POST",
-        headers: { ...this.headers, sn: signature },
-        body: JSON.stringify(payload),
-      }
-    );
-    return res.json();
-  }
-
-  async getDetail(id: string) {
-    const res = await fetch(
-      `https://www.webfic.com/webfic/book/detail/v2?id=${id}&timestamp=${this.timestamp}&language=in`,
-      {
-        method: "GET",
-        headers: { ...this.headers },
-      }
-    );
-    return res.json() as Promise<any>;
-  }
-
-  async batchUnlockEpisode(bookId: string, chapterIdList: string[]) {
-    const payload = {
-      bookId: bookId,
-      chapterIdList: chapterIdList,
-    };
-
-    this.timestamp = Date.now();
-    const signature = await this.getSignature(payload);
-    const res = await fetch(
-      `https://dramabox-api.d5studio.site/proxy.php/drama-box/chapterv2/batchDownload?timestamp=${this.timestamp}`,
-      {
-        method: "POST",
-        headers: { ...this.headers, sn: signature },
-        body: JSON.stringify(payload),
-      }
-    );
-    return res.json();
-  }
-}
+import { DramaboxAPI } from "./src/dramabox";
 
 async function getDramaboxChapterList(
   bookId: string,
   quality: number | null = null
 ) {
   const dramabox = new DramaboxAPI();
-  const detail = await dramabox.getDetail(bookId);
+  const detail = await dramabox.getBookDetail(bookId);
 
-  const chapters = detail.data.chapterList.map((chapter: any) => chapter.id);
+  const chapters = detail.chapterList.map((chapter: any) => chapter.id);
   const unlocked = await dramabox.batchUnlockEpisode(bookId, chapters);
 
-  const sortedChapters = (unlocked as any).data.chapterVoList.sort(
+  const sortedChapters = unlocked.chapterVoList.sort(
     (a: any, b: any) => a.chapterIndex - b.chapterIndex
   );
 
@@ -157,12 +39,14 @@ async function getDramaboxChapterList(
       }
     } else {
       for (const cdn of chapter.cdnList) {
-        mp4Url = cdn.videoPathList[0].videoPath;
-        qualitySelected = cdn.videoPathList[0].quality;
+        mp4Url = cdn.videoPathList[0]?.videoPath ?? null;
+        qualitySelected = cdn.videoPathList[0]?.quality ?? null;
         break;
       }
       if (!mp4Url) {
-        console.warn(`Chapter ${chapter.chapterIndex} has no mp4 url`);
+        process.stdout.write(
+          `Chapter ${chapter.chapterIndex} has no mp4 url\n`
+        );
         continue;
       }
     }
@@ -385,8 +269,8 @@ async function runInteractiveCli() {
 
     const api = new DramaboxAPI();
     process.stdout.write("Searching...\n");
-    const result = (await api.search(keyword)) as any;
-    const list = (result?.data?.searchList ?? []) as any[];
+    const result = await api.searchBook(keyword);
+    const list = (result.searchList ?? []) as any[];
     if (!Array.isArray(list) || list.length === 0) {
       console.error("No results found.");
       return;
@@ -466,6 +350,12 @@ async function runInteractiveCli() {
     const currentBatch: string[] = [];
     const mergedChapters: string[] = [];
     for (const chapter of chapters) {
+      if (!chapter.mp4Url) {
+        process.stdout.write(
+          `Chapter ${chapter.chapterIndex} has no mp4 url\n`
+        );
+        continue;
+      }
       const indexPadded = String(chapter.chapterIndex).padStart(3, "0");
       const outPath = `${targetFolder}/${indexPadded}.mp4`;
       if (fs.existsSync(outPath)) {
