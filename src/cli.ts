@@ -234,17 +234,21 @@ async function processTasks(seriesRecord: Series, tasks: Task[]) {
 }
 
 if (import.meta.main) {
-  const uploadToDrivePrompt = await question("Upload to Google Drive? (y/n): ");
-  let uploadToDrive = false;
-  let deleteAfterUpload = false;
-  if (/^y(es)?$/i.test(uploadToDrivePrompt.trim())) {
-    await authorizeGoogleApi();
-    uploadToDrive = true;
-    const deleteAfterUploadPrompt = await question(
-      "Delete after upload to Drive? (y/n): "
+  let uploadToDrive = process.env.UPLOAD_TO_DRIVE === "true";
+  let deleteAfterUpload = process.env.DELETE_AFTER_UPLOAD === "true";
+  if (!uploadToDrive) {
+    const uploadToDrivePrompt = await question(
+      "Upload to Google Drive? (y/n): "
     );
-    if (/^y(es)?$/i.test(deleteAfterUploadPrompt.trim())) {
-      deleteAfterUpload = true;
+    if (/^y(es)?$/i.test(uploadToDrivePrompt.trim())) {
+      await authorizeGoogleApi();
+      uploadToDrive = true;
+      const deleteAfterUploadPrompt = await question(
+        "Delete after upload to Drive? (y/n): "
+      );
+      if (/^y(es)?$/i.test(deleteAfterUploadPrompt.trim())) {
+        deleteAfterUpload = true;
+      }
     }
   }
 
