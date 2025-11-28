@@ -8,13 +8,13 @@ async function getDramaboxChapterList(
   quality: number | null = null
 ) {
   const dramabox = new DramaboxAPI();
-  const detail = await dramabox.getBookDetail(bookId);
+  // const detail = await dramabox.getBookDetail(bookId);
 
-  const chapters = detail.chapterList.map((chapter: any) => chapter.id);
-  const unlocked = await dramabox.batchUnlockEpisode(bookId, chapters);
+  // const chapters = detail.chapterList.map((chapter: any) => chapter.id);
+  const unlocked = await dramabox.loadBook(bookId);
 
-  const sortedChapters = unlocked.chapterVoList.sort(
-    (a: any, b: any) => a.chapterIndex - b.chapterIndex
+  const sortedChapters = unlocked.chapterList.sort(
+    (a, b) => a.chapterIndex - b.chapterIndex
   );
 
   const chapterList = [];

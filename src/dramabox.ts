@@ -102,18 +102,25 @@ interface UnlockBookDetail {
   introduction: string;
 }
 
+interface UnlockBookDetailV2 {
+  chapterList: UnlockChapterItem[];
+  bookName: string;
+  bookCover: string;
+  introduction: string;
+}
+
 const headers = {
   accept: "application/json, text/plain, */*",
   "accept-encoding": "gzip, deflate, br, zstd",
   "accept-language": "en-GB,en-US;q=0.9,en;q=0.8,id;q=0.7",
-  "android-id": "ffffffff9b5bfe16000000000",
+  "android-id": "ffffffff94d1fe9a000000000",
   apn: "1",
   brand: "Xiaomi",
   cid: "DAUAF1064291",
-  "content-length": "930",
+  "content-length": "291",
   "content-type": "application/json; charset=UTF-8",
   "current-language": "in",
-  "device-id": "ee9d23ac-0596-4f3e-8279-b652c9c2b7f0",
+  "device-id": "04999725-0a8d-4199-92a3-294593f999b2",
   language: "in",
   md: "Redmi Note 8",
   mf: "XIAOMI",
@@ -125,10 +132,10 @@ const headers = {
   priority: "u=1, i",
   referer: "https://dramabox.drama.web.id/",
   "time-zone": "+0700",
-  tn: "Bearer ZXlKMGVYQWlPaUpLVjFRaUxDSmhiR2NpT2lKSVV6STFOaUo5LmV5SnlaV2RwYzNSbGNsUjVjR1VpT2lKVVJVMVFJaXdpZFhObGNrbGtJam96TXpZd09EUXdOVFo5LkFLMWw0d01Ud00xVndOTHBOeUlOcmtHN3dmb0czaGROMEgxNWVPZV9KaHc=",
+  tn: "Bearer ZXlKMGVYQWlPaUpLVjFRaUxDSmhiR2NpT2lKSVV6STFOaUo5LmV5SnlaV2RwYzNSbGNsUjVjR1VpT2lKVVJVMVFJaXdpZFhObGNrbGtJam96TkRrM01EWTFPREY5LnBjUGk2WXF0Tkp2UnJmOWQ1SVJUdGZKX2NEMEhkRXd3X1kxNFlRVGdNOUU=",
   "user-agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-  "user-id": "336084056",
+  "user-id": "349706581",
   version: "470",
   vn: "4.7.0",
 };
@@ -168,11 +175,15 @@ export class DramaboxAPI {
     return response.signature as string;
   }
 
-  async searchBook(keyword: string) {
+  async searchBook(
+    keyword: string,
+    pageNo: number = 1,
+    pageSize: number = 100
+  ) {
     const payload = {
       searchSource: "搜索按钮",
-      pageNo: 1,
-      pageSize: 100,
+      pageNo,
+      pageSize,
       from: "search_sug",
       keyword,
     };
@@ -188,7 +199,20 @@ export class DramaboxAPI {
 
     const response = (await res.json()) as BaseResponse<any>;
     if (!response.success) throw new Error(response.message);
-    return response.data;
+    if (!response.data.searchList) {
+      return {
+        ...response.data,
+        searchList: [],
+        isMore: 0,
+      };
+    }
+    const validBookList = response.data.searchList.filter(
+      (book: any) => !!book.bookId
+    );
+    return {
+      ...response.data,
+      searchList: validBookList,
+    };
   }
 
   async getBookDetail(id: string) {
@@ -204,6 +228,13 @@ export class DramaboxAPI {
     return response.data;
   }
 
+  /**
+   *
+   * @deprecated Use loadBook instead
+   * @param bookId
+   * @param chapterIdList
+   * @returns
+   */
   async batchUnlockEpisode(bookId: string, chapterIdList: string[]) {
     const payload = {
       bookId: bookId,
@@ -223,5 +254,86 @@ export class DramaboxAPI {
     const response = (await res.json()) as BaseResponse<UnlockBookDetail>;
     if (!response.success) throw new Error(response.message);
     return response.data;
+  }
+
+  async loadBook(bookId: string) {
+    const payload = {
+      bookId: bookId,
+      boundaryIndex: 0,
+      comingPlaySectionId: -1,
+      currencyPlaySource: "continueWatchingBar",
+      currencyPlaySourceName: "继续观看提示条",
+      enterReaderChapterIndex: 19,
+      index: 20,
+      loadDirection: 1,
+      needEndRecommend: 0,
+      preLoad: true,
+      pullCid: "",
+      rid: "",
+      startUpKey: "",
+    };
+    this.timestamp = Date.now();
+    const signature = await this.getSignature(payload);
+    const res = await fetch(
+      `https://dramabox-api.d5studio.site/proxy.php/drama-box/chapterv2/batch/load?timestamp=${this.timestamp}`,
+      {
+        method: "POST",
+        headers: { ...this.headers, sn: signature },
+        body: JSON.stringify(payload),
+      }
+    );
+    const response = (await res.json()) as BaseResponse<UnlockBookDetailV2>;
+    if (!response.success) throw new Error(response.message);
+    return response.data;
+  }
+
+  async crawlAllBooks() {
+    const queries = [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "f",
+      "g",
+      "h",
+      "i",
+      "j",
+      "k",
+      "l",
+      "m",
+      "n",
+      "o",
+      "p",
+      "q",
+      "r",
+      "s",
+      "t",
+      "u",
+      "v",
+      "w",
+      "x",
+      "y",
+      "z",
+    ];
+    const seen = new Set<string>();
+    const books: Book[] = [];
+    for (const query of queries) {
+      let pageNo = 1;
+      for (;;) {
+        const result = await this.searchBook(query, pageNo);
+
+        for (let i = 0; i < result.searchList.length; i++) {
+          const book = result.searchList[i];
+          if (!seen.has(book.bookId)) {
+            seen.add(book.bookId);
+            books.push(book);
+          }
+        }
+        if (result.isMore !== 1) break;
+        pageNo++;
+      }
+    }
+    return books;
   }
 }
